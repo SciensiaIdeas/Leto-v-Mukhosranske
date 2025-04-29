@@ -842,7 +842,7 @@ class Main:
             self.screen.blit(self.font.render(f"Концовки ({len(self.endings)}/12)", True, white), (8.95 * x_100, 4.45 * y_100))
             pygame.draw.rect(self.screen, self.blue, (x2, 5.2 * y_100, w, s1))
             self.screen.blit(self.font.render("Выход", True, white),(9.6 * x_100, 5.25 * y_100))
-            text1, rect1 = self.font_b.render("© Sciensia Ideas 2025 (v2.1)", fgcolor=black, style=pygame.freetype.STYLE_STRONG)
+            text1, rect1 = self.font_b.render("© Sciensia Ideas 2025 (v1.0)", fgcolor=black, style=pygame.freetype.STYLE_STRONG)
             self.screen.blit(text1, (x_100, size[1] - y_100*0.5))
             pygame.display.flip()
 
