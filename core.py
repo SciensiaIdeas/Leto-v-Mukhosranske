@@ -1,103 +1,141 @@
+import moment
 import pygame
-import random
+import numpy as np
 from collections.abc import Iterable
-from sortedcontainers import SortedList
-from datetime import time
+from sortedcontainers import SortedKeyList
+from datetime import time, timedelta
 import sys
 import os
-
-
-class Choice:
-    def __init__(self, text: str, dialog, link: int = None):
-        self.text = text
-        self.dialog = dialog
-        self.link = link
+import weakref
+from operator import attrgetter
+from dataclasses import dataclass
+from branch import MyWidget
+import json
 
 
 class Prob:
-    def __init__(self, high=False):
-        self.high = high
-        self.open = True
-        self._pr = None
+    const_exp = np.log(0.05) / np.log(0.5)
+    d = None
+    @staticmethod
+    def update_d(N):
+        Prob.d = 0.95 * N / Prob.const_exp
 
-    def update(self, n: int):
-        self._pr = (n + 1) / 12
-        if self._pr > 1:
-            self._pr = 1
+    __slots__ = ("high", "open", "_pr", "x")
+    def __init__(self):
+        self.high = False
+        self.open = False
+        self._pr = None
+        self.x = None
+
+    def update(self, x):
+        self._pr = 1 - 0.5 ** (x / Prob.d)
         if self.high:
             self._pr += (1 - self._pr) * self._pr
+        self.x = x
 
     def dotry(self):
-        self.open = random.random() < self._pr
+        self.open = np.random.random() < self._pr
         return self.open
 
     def display(self):
         return int(self._pr * 100)
 
+@dataclass
+class Choice:
+    text_id: int | str
+    link: int
+    extra: int
+    dialog: bool | Prob
+    selected: bool = False
 
+    def __init__(self, text_id, link: int = None, extra = 0, dialog = True):
+        self.text_id = text_id
+        self.dialog = dialog
+        self.link = link
+        self.extra = extra
+
+    def text(self, T: Iterable[str]) -> str:
+        return T[self.text_id] if isinstance(self.text_id, int) else self.text_id
+
+
+@dataclass
 class Frame:
+    link: int
+    time: time
+    atimes: Iterable[tuple[int, timedelta]]
+    time_s: moment.date = None
+    temp_s: int = None
+    choices: Iterable[Choice] = None
+    next_link: int = None
+
     def __init__(self, link: int, choices=None, atimes=None, _time: time = None):
         self.link = link
         self.time = _time
         self.atimes = atimes
-        self.characters = None
 
         if isinstance(choices, Iterable):
             self.choices = choices
-            self.next_link = None
         else:
-            self.choices = None
             self.next_link = choices
 
-    def __lt__(self, other):
-        if isinstance(other, Frame):
-            return self.link < other.link
-        elif isinstance(other, int):
-            return self.link < other
+    def __str__(self):
+        return (f"link={self.link}; choices={len(self.choices) if self.choices is not None else 'null'}; "
+                f"next_link={self.next_link if self.next_link else 'null'}")
 
 
+@dataclass
 class Ending:
-    def __init__(self, link: int, name: str, checkpoint: int):
-        self.link = link
-        self.name = name
-        self.next_link = checkpoint
+    link: int
+    name_id: int
+    next_link: int
 
-    def __lt__(self, other):
-        if isinstance(other, Ending):
-            return self.link < other.link
-        elif isinstance(other, int):
-            return self.link < other
+    def text(self, T: Iterable[str]) -> str:
+        return T[self.name_id]
 
 
+@dataclass(frozen=True)
 class Character:
-    def __init__(self, link: int, name: str, subtitle: str, age: int):
-        self.link = link
-        self.name = name
-        self.subtitle = subtitle
-        self.age = age
+    link: int
+    name_id: int
+    age: int
+
+    def text(self, T: Iterable[str]) -> tuple[str, str]:
+        return T[self.name_id], T[self.name_id + 1]
 
 
 class FrameArray:
+    __slots__ = "_list"
     def __init__(self, arr):
-        self._container = SortedList(arr)
+        self._list = SortedKeyList(arr, key=attrgetter('link'))
 
-    def __getitem__(self, item):
-        index = self._container.bisect_left(item)
-        if index < len(self._container):
-            return self._container[index]
+    def __getitem__(self, link: int):
+        i = self._list.bisect_key_left(link)
+        if i < len(self._list) and self._list[i].link == link:
+            return self._list[i]
         return None
 
-    def update(self, arr):
-        self._container.update(arr)
+    def remove(self, link: int):
+        i = self._list.bisect_key_right(link)
+        if i < len(self._list) and self._list[i].link == link:
+            self._list.pop(i)
+
+    def __iter__(self):
+        return iter(self._list)
 
 
-def get_geometry(choices, font, screen):
-    size = screen.get_size()
-    button_h = int(0.065 * size[1])
-    button_gap = int(0.0175 * size[0])
+def get_geometry(choices, font, surf, text, initial_w=0):
+    if isinstance(surf, pygame.Rect):
+        size = (surf.w, surf.h)
+        button_h = int(0.13 * size[1])
+        button_gap = int(0.035 * size[0])
+    else:
+        size = surf.get_size()
+        button_h = int(0.065 * size[1])
+        button_gap = int(0.0175 * size[0])
+
     n = len(choices)
     # Расчет ширины каждой кнопки в зависимости от текста
-    button_width = max(font.size(choice.text + '(100%)')[0] + button_gap for choice in choices)
+    button_width = max(font.size(choice.text(text)+'(100%)O')[0] + button_gap for choice in choices) + initial_w
     button_height = button_h * n + button_gap * (n-1)
 
     # Начальная позиция первой кнопки (по центру экрана)
@@ -109,49 +147,6 @@ def get_geometry(choices, font, screen):
         buttons.append(button_rect)
         current_y += button_h + button_gap
     return buttons
-
-
-def create_buttons(choices, buttons, font, screen):
-    for button_rect, choice in zip(buttons, choices):
-        if isinstance(choice.dialog, Prob):
-            color = (203, 0, 255)
-        else:
-            color = (112, 173, 71) if choice.dialog else (255, 0, 0)
-        pygame.draw.rect(screen, color, button_rect)
-        if isinstance(choice.dialog, Prob):
-            if choice.dialog.open:
-                s = f'{choice.text} ({choice.dialog.display()}%)'
-                text_surface = font.render(s, True, (0, 0, 0))
-            else:
-                text_surface = font.render(choice.text, True, (163, 0, 0))
-        else:
-            text_surface = font.render(choice.text, True, (0, 0, 0))
-        screen.blit(text_surface, (button_rect.x + (button_rect.width - text_surface.get_width()) // 2,
-                                   button_rect.y + (button_rect.height - text_surface.get_height()) // 2))
-
-
-def add_button_events(cls, choices, buttons, last_frame):
-    for event in pygame.event.get():
-        cls.general_events(event)
-        if event.type == pygame.MOUSEBUTTONDOWN:
-            for button_rect, choice in zip(buttons, choices):
-                if button_rect.collidepoint(event.pos):
-                    if isinstance(choice.dialog, Prob):
-                        prob = choice.dialog
-                        if prob.open:
-                            if prob.dotry():
-                                choice.dialog = False
-                                return choice.link
-                            else:
-                                return -1
-                        else:
-                            return -1
-                    return choice.link
-        if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_ESCAPE:
-                if cls.show_settings(last_frame):
-                    return
-                pygame.mixer.music.set_volume(cls.volume)
 
 
 def predict_act(acts: dict):
@@ -179,17 +174,17 @@ def predict_act(acts: dict):
                 acts['l_change'].append(1)
         if acts['win_'] is None:
             if acts['d_change']:
-                change = bool(random.choice(acts['d_change']))
+                change = bool(np.random.choice(acts['d_change']))
             else:
                 change = True
         elif acts['win_']:
             if acts['w_change']:
-                change = bool(random.choice(acts['w_change']))
+                change = bool(np.random.choice(acts['w_change']))
             else:
                 change = False
         else:
             if acts['l_change']:
-                change = bool(random.choice(acts['l_change']))
+                change = bool(np.random.choice(acts['l_change']))
             else:
                 change = True
 
@@ -210,14 +205,14 @@ def fighting(cur_act: int, acts: dict):
 
     pr = predict_act(acts)
     if len(pr) == 3:
-        x = random.randint(0, 2)
+        x = np.random.randint(0, 3)
     else:
-        x = random.choice([beat(elem) for elem in pr])
+        x = np.random.choice([beat(elem) for elem in pr])
 
-    link = 84+x*3+cur_act
-    if link in (85, 89, 90):
+    link = 89+x*3+cur_act
+    if link in (90, 94, 95):
         win = True
-    elif link in (86, 87, 91):
+    elif link in (91, 92, 96):
         win = False
     else:
         win = None
@@ -227,7 +222,6 @@ def fighting(cur_act: int, acts: dict):
     acts['stats'].append(cur_act)
     return link
 
-
 def res(relative_path):
     if getattr(sys, 'frozen', False):
         base_path = sys._MEIPASS  # Temp directory when running from PyInstaller
@@ -235,3 +229,155 @@ def res(relative_path):
         base_path = os.path.abspath(".")  # Normal script execution path
 
     return os.path.join(base_path, relative_path)
+
+
+class Constants:
+    def __init__(self):
+        self.question_range = range(71, 85)
+        self.fight_range = range(88, 98)
+        self.checkpoints = (4, 25, 35, 66, 101, 105)
+        self.search_range = (101, 105)
+        self.search_range_after = range(107, 112)
+        self.games_range = set(self.question_range) | set(self.fight_range) | set(self.search_range_after)
+        self.saves_range = self.games_range - {71, 88}
+
+        self.EMOJI_IMAGES = None
+        self.emoji_size = (32, 32)
+
+        pygame.mixer.init()
+        self.click = pygame.mixer.Sound(res('media/click.wav'))
+        self.fight_s = pygame.mixer.Sound(res('media/fight.wav'))
+        self.wrong = pygame.mixer.Sound(res('media/wrong.wav'))
+        self.clock = pygame.mixer.Sound(res('media/clock.wav'))
+
+        self.menu_video = res('media/menu.mp4')
+        self.menu_audio = res('media/menu.wav')
+        self.logo_icon = pygame.image.load(res('media/logo.png'))
+        self.clock_icon = pygame.image.load(res('media/clock.png'))
+        self.disclaimer_audio = res('media/guide.wav')
+        self.searching = res('media/searching.mp3')
+
+        user_os = sys.platform
+        if user_os.startswith('win'):
+            # Windows
+            self.sub_font = "arial.ttf"
+            self.bold_font = 'Courier'
+            self.text_font = pygame.font.match_font('timesnewroman')
+        elif user_os.startswith('linux'):
+            # Linux
+            self.sub_font = pygame.font.match_font('dejavusans')
+            self.bold_font = 'Liberation Serif'
+            self.text_font = pygame.font.match_font('ubuntu')
+
+    def change_theme(self, theme_name: str):
+        with open(res(f"themes/{theme_name}.json"), 'r', encoding='utf-8') as file:
+            theme = json.load(file)
+            for key, value in theme.items():
+                setattr(self, f"color_{key}", tuple(value))
+
+constants = Constants()
+
+def update_choice(cls, txt):
+    cls.colors = []
+    cls.button_labels = []
+
+    for choice in cls.choices:
+        if isinstance(choice.dialog, Prob):
+            if choice.selected:
+                color1 = constants.color_pr_clicked
+            else:
+                color1 = constants.color_pr
+        else:
+            if choice.selected:
+                color1 = constants.color_dialog_clicked if choice.dialog else constants.color_action_clicked
+            else:
+                color1 = constants.color_dialog if choice.dialog else constants.color_action
+
+        title = choice.text(txt)
+        if isinstance(choice.dialog, Prob):
+            if choice.dialog.open or cls.type == -3:
+                texti = f'{title} ({choice.dialog.display()}%)'
+                if cls.type == -3:
+                    val = round(choice.dialog.x, 1)
+                    texti += f'{val} :fly:'
+                color2 = constants.color_front
+            else:
+                texti = title
+                color2 = constants.color_txtused
+        else:
+            texti = title
+            color2 = constants.color_front
+
+        category = get_category(choice)
+        # display emoji
+        if category and not choice.dialog:
+            texti += f' :{category}:'
+
+        cls.colors.append((color1, color2))
+        cls.button_labels.append(texti)
+
+def reward_player(choice, game, choices, link, frame_surface):
+    if choice.dialog:
+        choice.dialog = False
+        # reward player
+        category = get_category(choice)
+        if category:
+            if category in ('ending', 'biography'):
+                if category == 'biography':
+                    x = choice.extra
+                    game.collection[category].add(x)
+                    game.unseen[category].add(x)
+            else:
+                game.collection[category] += 1
+                game.unseen[category] += 1
+            game.saves['credits'] += game.plus_factor[category]
+        # open new frame
+        if all(not ch.dialog for ch in choices) and link not in constants.games_range:
+            w = MyWidget(choices, frame_surface, game.time.copy(), game.temp)
+            game.frame_s.add(w)
+            game.unseen['frames'].add(w.thumb_key)
+            return True
+    return False
+
+def get_category(choice):
+    if choice.extra == 0:
+        category = None
+    elif choice.extra == -1:
+        category = 'speedrun'
+    elif choice.extra == -2:
+        category = 'ending'
+    elif choice.extra == -3:
+        category = 'death'
+    else:
+        category = 'biography'
+
+    return category
+
+
+class ThumbCache:
+    __slots__ = "_store"
+    def __init__(self):
+        # слабые ссылки, чтобы GC мог забирать неиспользуемые Surface
+        self._store = weakref.WeakValueDictionary()
+
+    def get(self, key, base_surface, size):
+        """
+        key: любой хэшируемый ключ, например ('media42', 12.0) или ('frame', frame_id)
+        base_surface: Surface исходника (или уже уменьшенный Surface)
+        size: (w, h) желаемый размер
+        """
+        cache_key = (key, *size)
+        surf = self._store.get(cache_key)
+        if surf:
+            return surf
+
+        # создаём миниатюру один раз
+        thumb = pygame.transform.smoothscale(base_surface, size).convert()
+        self._store[cache_key] = thumb
+        return thumb
+
+    def __getstate__(self): return {}
+
+    def __setstate__(self, state): self.__init__()
+
+THUMBS = ThumbCache()
