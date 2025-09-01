@@ -1,8 +1,11 @@
 /shelf/
 /workspace.xml
-/.venv/
 /build/
 /media/
 /subs/
-/saves/
-/logo.ico
+/themes/
+/leto-v-mukhosranske_1.1.0_amd64/
+/dist/
+/.venv/
+/logo.png
+/leto-v-mukhosranske_1.1.0_amd64.deb

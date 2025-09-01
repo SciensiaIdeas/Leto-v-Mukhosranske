@@ -4,6 +4,8 @@ from PIL import ImageFont
 import os
 import core
 import pickle
+from platformdirs import user_data_dir
+from pathlib import Path
 
 import text
 from core import constants
@@ -332,8 +334,10 @@ class Main:
 
 
 if __name__ == "__main__":
-    save_path = core.res('saves/main.dat')
-    save_path2 = core.res('saves/widgets.dat')
+    save_dir = Path(user_data_dir("Leto-v-Muhosranske", "SciensiaIdeas")) / "saves"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    save_path = save_dir / "main.dat"
+    save_path2 = save_dir / "widgets.dat"
     game = Main()
 
     while True:
